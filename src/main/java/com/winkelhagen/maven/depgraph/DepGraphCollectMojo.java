@@ -4,17 +4,18 @@ import com.winkelhagen.maven.depgraph.graph.DependencyEdge;
 import com.winkelhagen.maven.depgraph.graph.DependencyVertex;
 import com.winkelhagen.maven.depgraph.graph.Scope;
 import com.winkelhagen.maven.tools.SimpleIncludesFilter;
-import org.apache.maven.artifact.Artifact;
-import org.apache.maven.execution.MavenSession;
-import org.apache.maven.model.Dependency;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.BuildPluginManager;
 import org.apache.maven.plugin.MojoExecutionException;
 
 import org.apache.maven.plugins.annotations.*;
 import org.apache.maven.project.*;
-import org.apache.maven.repository.RepositorySystem;
+import org.eclipse.aether.RepositorySystem;
 import org.eclipse.aether.RepositorySystemSession;
+import org.eclipse.aether.collection.CollectRequest;
+import org.eclipse.aether.collection.DependencyCollectionException;
+import org.eclipse.aether.graph.Dependency;
+import org.eclipse.aether.graph.DependencyNode;
 import org.eclipse.aether.graph.DependencyVisitor;
 import org.eclipse.aether.util.filter.PatternInclusionsDependencyFilter;
 import org.eclipse.aether.util.graph.visitor.FilteringDependencyVisitor;
@@ -25,19 +26,22 @@ import org.jgrapht.graph.DirectedMultigraph;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.*;
+import java.util.stream.Collectors;
 
 /**
  * mojo to generate a visualizable dependency tree that includes all dependencies ignored by maven 3.
  */
-@Mojo( name = "depgraph", defaultPhase = LifecyclePhase.GENERATE_SOURCES, requiresDependencyResolution = ResolutionScope.TEST)
+@Mojo( name = "depgraph", defaultPhase = LifecyclePhase.PRE_SITE)
 public class DepGraphCollectMojo extends AbstractMojo {
 
     private static final int VERY_VERBOSE = 3;
 
     private DirectedMultigraph<DependencyVertex, DependencyEdge> graph;
     private DOTExporter<DependencyVertex, DependencyEdge> dotExporter;
-
 
     @Component
     private RepositorySystem repositorySystem;
@@ -47,9 +51,6 @@ public class DepGraphCollectMojo extends AbstractMojo {
 
     @Component
     private MavenProject mavenProject;
-
-    @Component
-    private MavenSession mavenSession;
 
     @Component
     private ProjectDependenciesResolver projectDependenciesResolver;
@@ -88,11 +89,19 @@ public class DepGraphCollectMojo extends AbstractMojo {
         configureDOTExporter();
         createTrueDependencyGraph();
         addIgnoredDependencies();
-        File file = new File(mavenProject.getBuild().getDirectory(), outputFile);
+        Path buildDir = Paths.get(mavenProject.getBuild().getDirectory());
+        if (!Files.exists(buildDir)){
+            try {
+                Files.createDirectory(buildDir);
+            } catch (IOException e) {
+                throw new MojoExecutionException("problem creating build directory " + buildDir.toString(), e);
+            }
+        }
+        String file = buildDir.resolve(outputFile).toString();
         try (FileOutputStream fos = new FileOutputStream(file)){
             dotExporter.exportGraph(graph, fos);
         } catch (ExportException | IOException e) {
-            throw new MojoExecutionException("problem exporting to file " + file.getAbsolutePath(), e);
+            throw new MojoExecutionException("problem exporting to file " + file, e);
         }
 
     }
@@ -115,16 +124,29 @@ public class DepGraphCollectMojo extends AbstractMojo {
      */
     private void createTrueDependencyGraph() throws MojoExecutionException {
         try {
-            DefaultDependencyResolutionRequest defaultDependencyResolutionRequest = new DefaultDependencyResolutionRequest(mavenProject, repositorySystemSession);
             DependencyVisitor visitor = new TreeDependencyVisitor(new FilteringDependencyVisitor(
                     new GraphCollectingDependencyVisitor(graph, mavenProject.getArtifact().toString()),
                     includes==null ? null : new PatternInclusionsDependencyFilter(includes.split(","))
             ));
-            projectDependenciesResolver.resolve(defaultDependencyResolutionRequest).getDependencyGraph().accept(visitor);
+            DependencyNode dependencyNode = getRootDependencyNodeFromProject();
+
+            dependencyNode.accept(visitor);
 
         } catch (DependencyResolutionException e) {
-            throw new MojoExecutionException("unable to create the true dependencygraph of " + mavenProject.getArtifact().toString(), e);
+            throw new MojoExecutionException("unable to create the true dependencyGraph of " + mavenProject.getArtifact().toString(), e);
         }
+    }
+
+    /**
+     * returns the root dependencyNode of the mavenProject.
+     * @return the root dependencyNode of the mavenProject.
+     * @throws DependencyResolutionException when dependency resolution fails
+     */
+    private DependencyNode getRootDependencyNodeFromProject() throws DependencyResolutionException {
+        DefaultDependencyResolutionRequest dependencyResolutionRequest = new DefaultDependencyResolutionRequest(mavenProject, repositorySystemSession);
+//        todo: figure out why this doesn't work:
+//        dependencyResolutionRequest.setResolutionFilter(includes==null ? null : new PatternInclusionsDependencyFilter(includes.split(",")));
+        return projectDependenciesResolver.resolve(dependencyResolutionRequest).getDependencyGraph();
     }
 
     /**
@@ -133,7 +155,7 @@ public class DepGraphCollectMojo extends AbstractMojo {
      * @return true iff there are no filter or if at least one filter includes the dependency
      */
     private boolean isIncluded(Dependency dependency){
-        return filters == null || SimpleIncludesFilter.isIncluded(filters, dependency);
+        return filters == null || SimpleIncludesFilter.isIncluded(filters, dependency.getArtifact());
     }
 
     /**
@@ -145,19 +167,25 @@ public class DepGraphCollectMojo extends AbstractMojo {
     private void addIgnoredDependencies() throws MojoExecutionException {
         Set<String> uniqueDependencies = new HashSet<>();
         Queue<Dependency> dependencyQueue = new LinkedList<>();
-        mavenProject.getDependencies().stream()
-                .filter(this::isIncluded)
-                .peek((d) -> output(mavenProject, d))
-                .peek((d) -> addToGraph(mavenProject, d))
-                .filter((d) -> uniqueDependencies.add(uniqueName(d)))
-                .forEach(dependencyQueue::add);
+        try {
+            getDirectProjectDependencies().stream()
+                    .filter(this::isIncluded)
+                    .peek((d) -> output(mavenProject, d))
+                    .peek((d) -> addToGraph(mavenProject, d))
+                    .filter((d) -> uniqueDependencies.add(uniqueName(d)))
+                    .forEach(dependencyQueue::add);
+        } catch (DependencyResolutionException e) {
+            //TODO: perhaps filter these nodes - maybe with a note to the node.
+            throw new MojoExecutionException("Unable to build project: "
+                    + mavenProject.toString(), e);
+        }
         while (true){
             Dependency dependency = dependencyQueue.poll();
             if (dependency == null){
                 break;
             }
             try {
-                getMavenProject(dependency).getDependencies().stream()
+                getDirectProjectDependencies(dependency).stream()
                         .filter(this::isIncluded)
                         .map((d) -> adjustScope(d, dependency))
                         .filter((d) -> d.getScope() != null)
@@ -165,7 +193,7 @@ public class DepGraphCollectMojo extends AbstractMojo {
                         .peek((d) -> addToGraph(dependency, d))
                         .filter((d) -> uniqueDependencies.add(uniqueName(d)))
                         .forEach(dependencyQueue::add);
-            } catch (ProjectBuildingException e) {
+            } catch (DependencyCollectionException e) {
                 //TODO: perhaps filter these nodes - maybe with a note to the node.
                 throw new MojoExecutionException("Unable to build project: "
                         + dependency.toString(), e);
@@ -189,7 +217,7 @@ public class DepGraphCollectMojo extends AbstractMojo {
      * @param dependency the dependency that might result in a target vertex and a new edge
      */
     private void addToGraph(Dependency sourceDependency, Dependency dependency) {
-        DependencyVertex sourceVertex = new DependencyVertex(sourceDependency.getGroupId() + ":" + sourceDependency.getArtifactId() + ":" + sourceDependency.getType() + ":" + sourceDependency.getVersion());
+        DependencyVertex sourceVertex = new DependencyVertex(sourceDependency.getArtifact().toString());
         addToGraph(sourceVertex, dependency);
     }
 
@@ -200,11 +228,9 @@ public class DepGraphCollectMojo extends AbstractMojo {
      */
     private void addToGraph(DependencyVertex sourceVertex, Dependency dependency) {
         DependencyEdge edge = new DependencyEdge(Scope.byName(dependency.getScope()));
-        DependencyVertex targetVertex = new DependencyVertex(dependency.getGroupId() + ":" + dependency.getArtifactId() + ":" + dependency.getType() + ":" + dependency.getVersion(), Scope.byName(dependency.getScope()), true);
+        DependencyVertex targetVertex = new DependencyVertex(dependency.getArtifact().toString(), Scope.byName(dependency.getScope()), true);
         graph.addVertex(targetVertex);
-//        if (graph.containsEdge(sourceVertex, targetVertex)){
-            edge.setIgnored(true);
-//        }
+        edge.setIgnored(true);
         graph.addEdge(
                 sourceVertex,
                 targetVertex,
@@ -245,21 +271,28 @@ public class DepGraphCollectMojo extends AbstractMojo {
      * @return a unique name for this dependency
      */
     private String uniqueName(Dependency dependency){
-        return dependency.getGroupId() + ":" + dependency.getArtifactId() + ":" + dependency.getType() + ":" + dependency.getVersion() + ":" + dependency.getScope();
+        org.eclipse.aether.artifact.Artifact artifact = dependency.getArtifact();
+        return artifact.getGroupId() + ":" + artifact.getArtifactId() + ":" + artifact.getExtension() + ":" + artifact.getVersion() + ":" + artifact.getClassifier();
     }
 
     /**
-     * //todo: investigate rewrite to return a list of aether dependencies so that we can use the PatternInclusionsDependencyFilter
-     * takes a maven dependency and returns a maven project for building this dependency.
+     * takes a aether dependency and returns the list of direct dependencies.
      * @param dependency the dependency to convert
-     * @return the mavenProject that would build this dependency
-     * @throws ProjectBuildingException
+     * @return the list of direct dependencies
+     * @throws DependencyCollectionException when dependency collection fails
      */
-    private MavenProject getMavenProject(Dependency dependency) throws ProjectBuildingException {
-        Artifact pomArtifact = repositorySystem.createDependencyArtifact(dependency);
-        ProjectBuildingResult build = mavenProjectBuilder.build(pomArtifact, mavenSession.getProjectBuildingRequest());
-//        return build.getDependencyResolutionResult().getDependencyGraph().getChildren().stream().map((c) -> c.getDependency()).collect(Collectors.toList());
-        return build.getProject();
+    private List<Dependency> getDirectProjectDependencies(Dependency dependency) throws DependencyCollectionException {
+        CollectRequest collectRequest = new CollectRequest(dependency, null);
+        return repositorySystem.collectDependencies(repositorySystemSession, collectRequest).getRoot().getChildren().stream().map(DependencyNode::getDependency).collect(Collectors.toList());
+    }
+
+    /**
+     * returns the list of direct dependencies of the root mavenProject.
+     * @return the list of direct dependencies
+     * @throws DependencyResolutionException when dependency resolution fails
+     */
+    private List<Dependency> getDirectProjectDependencies() throws DependencyResolutionException {
+        return getRootDependencyNodeFromProject().getChildren().stream().map(DependencyNode::getDependency).collect(Collectors.toList());
     }
 
 }

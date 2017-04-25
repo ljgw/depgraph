@@ -1,6 +1,5 @@
 package com.winkelhagen.maven.tools;
 
-import org.apache.maven.model.Dependency;
 import org.eclipse.aether.artifact.Artifact;
 
 import java.util.List;
@@ -47,18 +46,6 @@ public class SimpleIncludesFilter {
     }
 
     /**
-     * helper method to get the unique dependencyString from a maven Dependency
-     * @param dependency dependency to determine the dependencyString for
-     * @return the dependencyString
-     */
-    public static String toDependencyString(Dependency dependency) {
-        return dependency.getGroupId() + ":" +
-                dependency.getArtifactId() + ":" +
-                dependency.getType() + ":" +
-                dependency.getVersion() + ":";
-    }
-
-    /**
      * helper method to get the unique dependencyString from an aether Artifact
      * @param artifact artifact to determine the dependencyString for
      * @return the dependencyString
@@ -68,16 +55,6 @@ public class SimpleIncludesFilter {
                 artifact.getArtifactId() + ":" +
                 artifact.getExtension() + ":" +
                 artifact.getBaseVersion() + ":";
-    }
-
-    /**
-     * convenience method to evaluate if a dependency is to be included [in the analysis]
-     * @param filters a list of {@link SimpleIncludesFilter}s
-     * @param dependency the dependency to evaluate
-     * @return true iff the dependency matches any filter
-     */
-    public static boolean isIncluded(List<SimpleIncludesFilter> filters, Dependency dependency){
-        return isIncluded(filters, toDependencyString(dependency));
     }
 
     /**
