@@ -32,11 +32,10 @@ import java.util.stream.Collectors;
 
 /**
  * mojo to generate a visualizable dependency tree that includes all dependencies ignored by maven 3.
+ * todo: investigate
  */
 @Mojo( name = "depgraph", defaultPhase = LifecyclePhase.PRE_SITE)
 public class DepGraphCollectMojo extends AbstractMojo {
-
-    private static final int VERY_VERBOSE = 3;
 
     private DirectedMultigraph<DependencyVertex, DependencyEdge> graph;
     private DOTExporter<DependencyVertex, DependencyEdge> dotExporter;
@@ -230,6 +229,7 @@ public class DepGraphCollectMojo extends AbstractMojo {
      * @return the dependency with adjusted scope. Scope might be set to null, which will filter out the dependency from processing
      */
     private Dependency adjustScope(Dependency dependency, Dependency parentDependency) {
+        getLog().info(dependency.toString() +" -> " + parentDependency.toString());
         if ("compile".equalsIgnoreCase(dependency.getScope()) || ("runtime".equalsIgnoreCase(dependency.getScope()) && !"compile".equalsIgnoreCase(parentDependency.getScope()))){
             dependency.setScope(parentDependency.getScope());
         } else if ("test".equalsIgnoreCase(dependency.getScope()) || "provided".equalsIgnoreCase(dependency.getScope())){
@@ -260,6 +260,7 @@ public class DepGraphCollectMojo extends AbstractMojo {
     }
 
     /**
+     * todo: it appears dependencies with scope 'provided' cannot be used to collect their direct dependencies
      * takes a aether dependency and returns the list of direct dependencies that are included in this analysis.
      * @param dependency the dependency to convert
      * @return the list of direct dependencies
