@@ -3,7 +3,6 @@ package com.winkelhagen.maven.depgraph;
 import com.winkelhagen.maven.depgraph.graph.DependencyEdge;
 import com.winkelhagen.maven.depgraph.graph.DependencyVertex;
 import com.winkelhagen.maven.depgraph.graph.Scope;
-import com.winkelhagen.maven.tools.SimpleIncludesFilter;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.BuildPluginManager;
 import org.apache.maven.plugin.MojoExecutionException;
@@ -23,7 +22,6 @@ import org.eclipse.aether.util.graph.visitor.TreeDependencyVisitor;
 import org.jgrapht.ext.*;
 import org.jgrapht.graph.DirectedMultigraph;
 
-import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.file.Files;
@@ -67,7 +65,7 @@ public class DepGraphCollectMojo extends AbstractMojo {
     @Parameter( defaultValue="${repositorySystemSession}")
     private RepositorySystemSession repositorySystemSession;
 
-    private List<SimpleIncludesFilter> filters = null;
+    private PatternInclusionsDependencyFilter inclusionsDependencyFilter;
 
     /**
      * <ul>
@@ -80,10 +78,9 @@ public class DepGraphCollectMojo extends AbstractMojo {
      */
     public void execute() throws MojoExecutionException {
         if (includes!=null){
-            filters = new ArrayList<>();
-            Arrays.stream(includes.split(",")).forEach((i) -> filters.add(new SimpleIncludesFilter(i)));
+            inclusionsDependencyFilter = new PatternInclusionsDependencyFilter(includes.split(","));
         } else {
-            filters = null;
+            inclusionsDependencyFilter = null;
         }
         graph = new DirectedMultigraph<>(DependencyEdge.class);
         configureDOTExporter();
@@ -126,7 +123,7 @@ public class DepGraphCollectMojo extends AbstractMojo {
         try {
             DependencyVisitor visitor = new TreeDependencyVisitor(new FilteringDependencyVisitor(
                     new GraphCollectingDependencyVisitor(graph, mavenProject.getArtifact().toString()),
-                    includes==null ? null : new PatternInclusionsDependencyFilter(includes.split(","))
+                    inclusionsDependencyFilter
             ));
             DependencyNode dependencyNode = getRootDependencyNodeFromProject();
 
@@ -144,18 +141,7 @@ public class DepGraphCollectMojo extends AbstractMojo {
      */
     private DependencyNode getRootDependencyNodeFromProject() throws DependencyResolutionException {
         DefaultDependencyResolutionRequest dependencyResolutionRequest = new DefaultDependencyResolutionRequest(mavenProject, repositorySystemSession);
-//        todo: figure out why this doesn't work:
-//        dependencyResolutionRequest.setResolutionFilter(includes==null ? null : new PatternInclusionsDependencyFilter(includes.split(",")));
         return projectDependenciesResolver.resolve(dependencyResolutionRequest).getDependencyGraph();
-    }
-
-    /**
-     * method to determine if a dependency should be included [in the current analysis]
-     * @param dependency the dependency to include
-     * @return true iff there are no filter or if at least one filter includes the dependency
-     */
-    private boolean isIncluded(Dependency dependency){
-        return filters == null || SimpleIncludesFilter.isIncluded(filters, dependency.getArtifact());
     }
 
     /**
@@ -169,7 +155,6 @@ public class DepGraphCollectMojo extends AbstractMojo {
         Queue<Dependency> dependencyQueue = new LinkedList<>();
         try {
             getDirectProjectDependencies().stream()
-                    .filter(this::isIncluded)
                     .peek((d) -> output(mavenProject, d))
                     .peek((d) -> addToGraph(mavenProject, d))
                     .filter((d) -> uniqueDependencies.add(uniqueName(d)))
@@ -186,7 +171,6 @@ public class DepGraphCollectMojo extends AbstractMojo {
             }
             try {
                 getDirectProjectDependencies(dependency).stream()
-                        .filter(this::isIncluded)
                         .map((d) -> adjustScope(d, dependency))
                         .filter((d) -> d.getScope() != null)
                         .peek((d) -> output(dependency, d))
@@ -276,23 +260,27 @@ public class DepGraphCollectMojo extends AbstractMojo {
     }
 
     /**
-     * takes a aether dependency and returns the list of direct dependencies.
+     * takes a aether dependency and returns the list of direct dependencies that are included in this analysis.
      * @param dependency the dependency to convert
      * @return the list of direct dependencies
      * @throws DependencyCollectionException when dependency collection fails
      */
     private List<Dependency> getDirectProjectDependencies(Dependency dependency) throws DependencyCollectionException {
         CollectRequest collectRequest = new CollectRequest(dependency, null);
-        return repositorySystem.collectDependencies(repositorySystemSession, collectRequest).getRoot().getChildren().stream().map(DependencyNode::getDependency).collect(Collectors.toList());
+        return repositorySystem.collectDependencies(repositorySystemSession, collectRequest).getRoot().getChildren().stream()
+                .filter((c) -> inclusionsDependencyFilter == null || inclusionsDependencyFilter.accept(c, null))
+                .map(DependencyNode::getDependency).collect(Collectors.toList());
     }
 
     /**
-     * returns the list of direct dependencies of the root mavenProject.
+     * returns the list of direct dependencies of the root mavenProject that are included in this analysis.
      * @return the list of direct dependencies
      * @throws DependencyResolutionException when dependency resolution fails
      */
     private List<Dependency> getDirectProjectDependencies() throws DependencyResolutionException {
-        return getRootDependencyNodeFromProject().getChildren().stream().map(DependencyNode::getDependency).collect(Collectors.toList());
+        return getRootDependencyNodeFromProject().getChildren().stream()
+                .filter((c) -> inclusionsDependencyFilter == null || inclusionsDependencyFilter.accept(c, null))
+                .map(DependencyNode::getDependency).collect(Collectors.toList());
     }
 
 }
