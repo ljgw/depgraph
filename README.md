@@ -2,7 +2,7 @@
 Maven plugin to generate transitive dependency graph information.
 
 ## usage
-mvn com.winkelhagen:depgraph-maven-plugin:depgraph -Dincludes=<maven dependency style includes filter>
+`mvn com.winkelhagen:depgraph-maven-plugin:depgraph -Dincludes=<maven dependency style includes filter>`  
 The includes parameter is optional, but not supplying it might cause some problems generating the dependency tree as it might fail to resolve some dependencies.
 Running the goal will create a dependency graph and export it in DOT format file to target/depgraph.gv. On unix bases systems you can use xdot to view this dependency graph.
 
