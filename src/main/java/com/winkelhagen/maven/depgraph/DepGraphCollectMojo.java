@@ -226,14 +226,13 @@ public class DepGraphCollectMojo extends AbstractMojo {
      * adjusts the scope of a dependency based on the scope of the parent dependency
      * @param dependency the dependency whose scope might be adjusted
      * @param parentDependency the parent dependency whose scope influences the new scope
-     * @return the dependency with adjusted scope. Scope might be set to null, which will filter out the dependency from processing
+     * @return a new dependency with the adjusted scope, or the same dependency with the same scope. Scope might be set to null, which will filter out the dependency from processing
      */
     private Dependency adjustScope(Dependency dependency, Dependency parentDependency) {
-        getLog().info(dependency.toString() +" -> " + parentDependency.toString());
         if ("compile".equalsIgnoreCase(dependency.getScope()) || ("runtime".equalsIgnoreCase(dependency.getScope()) && !"compile".equalsIgnoreCase(parentDependency.getScope()))){
-            dependency.setScope(parentDependency.getScope());
+            return dependency.setScope(parentDependency.getScope());
         } else if ("test".equalsIgnoreCase(dependency.getScope()) || "provided".equalsIgnoreCase(dependency.getScope())){
-            dependency.setScope(null);
+            return dependency.setScope(null);
         }
         return dependency;
     }
@@ -260,7 +259,6 @@ public class DepGraphCollectMojo extends AbstractMojo {
     }
 
     /**
-     * todo: it appears dependencies with scope 'provided' cannot be used to collect their direct dependencies
      * takes a aether dependency and returns the list of direct dependencies that are included in this analysis.
      * @param dependency the dependency to convert
      * @return the list of direct dependencies
